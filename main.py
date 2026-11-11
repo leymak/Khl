@@ -1,76 +1,98 @@
 import datetime
 import os
 import requests
-from google import genai
+from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TG_CHANNEL_ID")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 def get_tomorrow_matches():
     tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-    date_str = tomorrow.strftime("%Y-%m-%d")
+    date_str = tomorrow.strftime("%d.%m.%Y")  # Формат ДД.ММ.ГГГГ
+    api_date = tomorrow.strftime("%Y-%m-%d")  # Формат для запроса
     
-    # Открытый API календаря КХЛ
-    url = f"https://khl.ru/api/v1/calendar?date={date_str}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    # Запрос к открытому календарю КХЛ (работает без API-ключей)
+    url = f"https://khl.ru/api/v1/calendar?date={api_date}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code != 200:
+            return date_str, []
+            
         data = res.json()
         matches = []
         for match in data.get("matches", []):
-            team_a = match.get("team_a", {}).get("name")
-            team_b = match.get("team_b", {}).get("name")
+            home_team = match.get("team_a", {}).get("name")
+            guest_team = match.get("team_b", {}).get("name")
             start_time = match.get("time", "19:00")
-            if team_a and team_b:
-                matches.append({"home": team_a, "guest": team_b, "time": start_time})
+            
+            # Собираем базовые данные для каждого матча
+            if home_team and guest_team:
+                matches.append({
+                    "home": home_team,
+                    "guest": guest_team,
+                    "time": start_time
+                })
         return date_str, matches
     except Exception as e:
-        print(f"Ошибка получения расписания: {e}")
+        print(f"Ошибка получения матчей: {e}")
         return date_str, []
 
-def generate_preview(client, home, guest, time_str, date_str):
-    prompt = f"""
-Ты спортивный аналитик КХЛ. Сделай краткое, ёмкое превью на матч завтра ({date_str}, начало в {time_str} МСК):
-{home} vs {guest}.
+def create_preview_text(date_str, matches):
+    if not matches:
+        return ""
+        
+    text = f"📅 *МАТЧИ КХЛ НА ЗАВТРА ({date_str})*\n\n"
+    
+    for match in matches:
+        home = match["home"]
+        guest = match["guest"]
+        time = match["time"]
+        
+        # Шаблон превью, который заполняется автоматически
+        text += f"🏒 *{home} — {guest}*\n"
+        text += f"⏰ Начало: {time} (МСК)\n\n"
+        text += f"Анализируем предстоящее противостояние двух сильных соперников. "
+        text += f"Хозяева льда ({home}) на домашней арене постараются навязать свой темп игры и забрать важные очки. "
+        text += f"Однако гости ({guest}) славятся быстрыми контратаками и надежной игрой в большинстве.\n\n"
+        text += f"🔥 *Ожидания от матча:*\n"
+        text += f"Ожидается упорная борьба с первых минут. Высока вероятность, что игра пойдет до первой ошибки, а исход решится в третьем периоде или овертайме. Прогнозируем результативный матч!\n"
+        text += "—" * 15 + "\n\n"
+        
+    text += "📣 Подписывайтесь на канал, чтобы не пропустить результаты!"
+    return text
 
-Формат сообщения строго в Markdown (для Telegram):
-🏒 *{home} — {guest}* (Начало: {time_str} МСК)
-
-• *Текущая форма*: 1-2 предложения о состоянии команд и их последних результатах в сезоне 2026.
-• *Ключевой фактор*: площадка, мотивация, спецбригады большинства/меньшинства или лидеры.
-• *Прогноз*: ожидаемый исход и возможный счёт (например, 3:2 или 4:1).
-
-Пиши экспертно, коротко и без лишних предисловий.
-"""
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    return response.text
-
-def send_tg(text):
+def send_to_telegram(text):
+    if not text:
+        print("Нет текста для отправки")
+        return
+        
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHANNEL_ID,
         "text": text,
-        "parse_mode": "Markdown"
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
     }
-    requests.post(url, json=payload, timeout=15)
+    
+    try:
+        response = requests.post(url, json=payload, timeout=15)
+        if response.status_code == 200:
+            print("Пост успешно опубликован в Telegram!")
+        else:
+            print(f"Ошибка отправки: {response.text}")
+    except Exception as e:
+        print(f"Ошибка сети: {e}")
 
 def main():
     date_str, matches = get_tomorrow_matches()
     if not matches:
-        print("На завтра матчей не найдено.")
+        print("Матчей на завтра не найдено.")
         return
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    
-    for match in matches:
-        preview_text = generate_preview(client, match["home"], match["guest"], match["time"], date_str)
-        send_tg(preview_text)
-        print(f"Опубликован матч {match['home']} - {match['guest']}")
+        
+    post_text = create_preview_text(date_str, matches)
+    send_to_telegram(post_text)
 
 if __name__ == "__main__":
     main()
